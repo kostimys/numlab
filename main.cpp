@@ -1,87 +1,123 @@
-// Лабораторная работа №2, задание 1: первая краевая задача, метод баланса.
-// Консольная версия вычислительного ядра (графики/интерфейс подключаются отдельно).
-#include "Experiments.h"
-#include "Report.h"
+#include "Problem.h"
+#include "DifferenceScheme.h"
+#include "AnalyticSolution.h"
 #include <iostream>
-#include <algorithm>
-#include "ConsoleUtf8.h"
+#include <fstream>
+#include <vector>
+#include <iomanip>
+#include <cmath>
+#include <filesystem>
 
 using namespace std;
 
-int main() {
+int main(int argc, char* argv[]) {
+    int n = 40;
+    string bc_str = "TestMixed";
+    double target_eps = 0.5e-6;
+    bool auto_mode = false;
 
-    enableUtf8Console(); //Активирует все необходимые файлы windows.h, чтобы cmake все правильно компилровал и собирал.  
-    const MainTask mainProblem = makeMainProblem();
-    const TestTask testProblem = makeTestProblem(mainProblem); //Тестовая задача строится на базе основной.
+    // Если передан флаг -auto, включаем автоподбор
+    if (argc >= 2 && string(argv[1]) == "-auto") {
+        auto_mode = true;
+        if (argc >= 3) bc_str = argv[2];
+        if (argc >= 4) target_eps = stod(argv[3]);
+    } else {
+        if (argc >= 2) n = stoi(argv[1]);
+        if (argc >= 3) bc_str = argv[2];
+    }
 
-    //Способ вычисления интегралов для наших задач(Гаусс или Средних прямоугольников)
-    //(переключается в пункте 5).
-    MethodChoose choose = MethodChoose::Gauss;
+    MainTask p = makeMainProblem();
+    TestTask t = makeTestProblem(p);
+    filesystem::create_directories("results");
+    ofstream f("results/result.csv");
 
-
-    while (true) {
-        cout << "\n--- Лабораторная №2, задание 1 (вариант 2) ---\n"
-                     "1 - тестовая задача (подбор n под eps = 0.5e-6)\n"
-                     "2 - основная задача (подбор n под eps = 0.5e-6)\n"
-                     "3 - таблицы 4 и 5 (проверка порядка)\n"
-                     "4 - таблица 6 (широкий диапазон n)\n"
-                     "5 - сменить способ вычисления интегралов(Гаусс / Средние прямоугольники)\n"
-                     "0 - выход\n> ";
-        int cmd = -1;
-        if (!(cin >> cmd) || cmd == 0) break;
-
-        if (cmd == 1) {
-            const int n = findNForTest(testProblem, choose);
-            if (n == 0) { 
-                cout << "Точность не достигнута.\n"; 
-                continue; 
+    // Лямбда для расчета ошибки при заданном n
+    auto calculate_error = [&](int current_n) -> double {
+        if (bc_str == "TestDirichlet") {
+            p.bc = BCType::Dirichlet; t.bc = BCType::Dirichlet;
+            auto tp = t.toProblem(); auto v = solveScheme(tp, current_n);
+            AnalyticSolution exact(t);
+            double eps = 0;
+            for (int i = 0; i <= current_n; ++i) {
+                double x = i / (double)current_n;
+                eps = max(eps, abs(exact(x) - v[i]));
             }
-            const TestResult r = runTestProblem(testProblem, n, choose);
-            printTestReport(r, max(1, n / 20));
-            saveTestCsv(r, "test_problem.csv");
-            cout << "\nДанные сохранены в test_problem.csv\n";
-        } 
-        
-        else if (cmd == 2) {
-            const int n = findNForMain(mainProblem, choose);
-            if (n == 0) { 
-                cout << "Точность не достигнута.\n"; 
-                continue; 
+            return eps;
+        } else if (bc_str == "TestMixed") {
+            p.bc = BCType::MixedClassic; t.bc = BCType::MixedClassic;
+            auto tp = t.toProblem(); auto v = solveScheme(tp, current_n);
+            AnalyticSolution exact(t);
+            double eps = 0;
+            for (int i = 0; i <= current_n; ++i) {
+                double x = i / (double)current_n;
+                eps = max(eps, abs(exact(x) - v[i]));
             }
-            const MainResult r = runMainProblem(mainProblem, n, choose);
-            printMainReport(r, max(1, n / 20));
-            saveMainCsv(r, "main_problem.csv");
-            cout << "\nДанные сохранены в main_problem.csv\n";
-        } 
-        
-        else if (cmd == 3) {
-            const vector<int> ns = {10, 20, 40, 80, 160};
-            cout << "\n Способ вычисления интегралов: " << methodName(choose) << "\n";
-            const auto rows = collectErrors(testProblem, mainProblem, ns, true, true, choose);
-            printOrderTable(rows, true);
-            printOrderTable(rows, false);
-        } 
-        
-        else if (cmd == 4) {
-            const vector<int> ns = {10, 20, 50, 80, 100, 200, 500, 800, 1000,
-                                         2000, 5000, 8000, 10000, 100000, 1000000};
-            cout << "Считаю (для n = 10^6, это может занять некоторое время)...\n" << "\n Способ вычисления интегралов: " << methodName(choose) << "\n";
-            const auto rows = collectErrors(testProblem, mainProblem, ns, true, true, choose);
-            printWideTable(rows);
-            saveWideCsv(rows, "table6.csv");
-            cout << "\nДанные сохранены в table6.csv\n";
+            return eps;
+        } else if (bc_str == "MainDirichlet") {
+            p.bc = BCType::Dirichlet;
+            auto v = solveScheme(p, current_n); auto v2 = solveScheme(p, 2 * current_n);
+            double eps = 0;
+            for (int i = 0; i <= current_n; ++i) eps = max(eps, abs(v[i] - v2[2 * i]));
+            return eps;
+        } else { // MainMixed
+            p.bc = BCType::MixedImproved;
+            auto v = solveScheme(p, current_n); auto v2 = solveScheme(p, 2 * current_n);
+            double eps = 0;
+            for (int i = 0; i <= current_n; ++i) eps = max(eps, abs(v[i] - v2[2 * i]));
+            return eps;
         }
+    };
 
-        else if (cmd == 5) {
-            if (choose == MethodChoose::Gauss) {
-                choose = MethodChoose::Midpoint;
-            }
-            else {
-                choose = MethodChoose::Gauss;
-            }
-
-            cout << "Был выбран способ подсчета интегралов: " << methodName(choose) << "\n";
+    // Автоподбор сетки
+    if (auto_mode) {
+        n = 10;
+        while (calculate_error(n) > target_eps && n < 100000) {
+            n *= 2;
         }
+        cout << "[АВТОПОДБОР] Для достижения eps = " << target_eps << " выбрано n = " << n << "\n";
+    }
+
+    // Основные расчеты и сохранение в файл
+    if (bc_str == "TestDirichlet" || bc_str == "TestMixed") {
+        if (bc_str == "TestDirichlet") { p.bc = BCType::Dirichlet; t.bc = BCType::Dirichlet; }
+        else { p.bc = BCType::MixedClassic; t.bc = BCType::MixedClassic; }
+
+        auto tp = t.toProblem(); auto v = solveScheme(tp, n);
+        AnalyticSolution exact(t);
+
+        f << "Узел;x;u(x);v(x);Разность\n";
+        double eps1 = 0; double max_x = 0;
+        for (int i = 0; i <= n; ++i) {
+            double x = i / (double)n;
+            double u = exact(x);
+            double diff = abs(u - v[i]);
+            if (diff > eps1) { eps1 = diff; max_x = x; }
+            f << i << ";" << x << ";" << u << ";" << v[i] << ";" << diff << "\n";
+        }
+        cout << "=== " << (bc_str == "TestDirichlet" ? "ТЕСТОВАЯ (1-я краевая)" : "ТЕСТОВАЯ (Смешанная)") << " ===\n";
+        cout << "n = " << n << "\n";
+        cout << "eps1 = " << scientific << setprecision(6) << eps1 << " (задано: <= " << target_eps << ")\n";
+        cout << "Макс. отклонение в x = " << fixed << setprecision(4) << max_x << "\n";
+    }
+    else {
+        if (bc_str == "MainDirichlet") p.bc = BCType::Dirichlet;
+        else p.bc = BCType::MixedImproved;
+
+        auto v = solveScheme(p, n);
+        auto v2 = solveScheme(p, 2 * n);
+
+        f << "Узел;x;v(x);v2(x);Разность\n";
+        double eps2 = 0; double max_x = 0;
+        for (int i = 0; i <= n; ++i) {
+            double x = i / (double)n;
+            double diff = abs(v[i] - v2[2 * i]);
+            if (diff > eps2) { eps2 = diff; max_x = x; }
+            f << i << ";" << x << ";" << v[i] << ";" << v2[2 * i] << ";" << diff << "\n";
+        }
+        cout << "=== " << (bc_str == "MainDirichlet" ? "ОСНОВНАЯ (1-я краевая)" : "ОСНОВНАЯ (Смешанная)") << " ===\n";
+        cout << "n = " << n << "\n";
+        cout << "eps2 = " << scientific << setprecision(6) << eps2 << " (задано: <= " << target_eps << ")\n";
+        cout << "Макс. разность в x = " << fixed << setprecision(4) << max_x << "\n";
     }
 
     return 0;
